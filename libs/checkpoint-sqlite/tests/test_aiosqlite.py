@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any
 
 import pytest
@@ -188,3 +189,35 @@ class TestAsyncSqliteSaver:
             # (would have been dropped if injection succeeded)
             results = [c async for c in saver.alist(None, limit=None)]
             assert len(results) == 5
+
+
+async def test_sync_put_from_event_loop_raises_instead_of_deadlocking() -> None:
+    """Regression test for langchain-ai/langgraph#7857.
+
+    `AsyncSqliteSaver.put` and `put_writes` historically jumped straight to
+    `run_coroutine_threadsafe(...).result()` without the event-loop guard that
+    `get_tuple`, `list`, `delete_thread`, and `get_delta_channel_history` carry.
+    Calling either from inside the saver's own event loop therefore deadlocked
+    instead of raising a descriptive error.
+    """
+    config: RunnableConfig = {
+        "configurable": {
+            "thread_id": "thread-deadlock",
+            "checkpoint_ns": "",
+        }
+    }
+    checkpoint = empty_checkpoint()
+    metadata: CheckpointMetadata = {
+        "source": "input",
+        "step": 0,
+        "writes": {},
+        "score": 0,
+    }
+
+    async with AsyncSqliteSaver.from_conn_string(":memory:") as saver:
+        # `from_conn_string` records the running loop on `self.loop`. We're now
+        # in that same loop, so the guard must raise instead of blocking.
+        with pytest.raises(asyncio.InvalidStateError):
+            saver.put(config, checkpoint, metadata, {})
+        with pytest.raises(asyncio.InvalidStateError):
+            saver.put_writes(config, [("channel", "value")], task_id="task-1")
