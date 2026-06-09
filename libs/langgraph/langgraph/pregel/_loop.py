@@ -297,6 +297,12 @@ class PregelLoop:
         self.cache = cache
         self.nodes = nodes
         self.specs = specs
+        # Whether any channel is an UntrackedValue is fixed by the (static) specs
+        # and never changes during a run, so compute it once here instead of
+        # rescanning every channel on each put_writes / checkpoint save.
+        self._has_untracked_values = any(
+            isinstance(spec, UntrackedValue) for spec in specs.values()
+        )
         self.input_keys = input_keys
         self.output_keys = output_keys
         self.stream_keys = stream_keys
@@ -429,9 +435,7 @@ class PregelLoop:
             writes_to_save = writes
 
         # check if any writes are to an UntrackedValue channel
-        if any(
-            isinstance(channel, UntrackedValue) for channel in self.channels.values()
-        ):
+        if self._has_untracked_values:
             # we do not persist untracked values in checkpoints
             writes_to_save = [
                 # sanitize UntrackedValues that are nested within Send packets
@@ -1132,9 +1136,7 @@ class PregelLoop:
         elif "counters_since_delta_snapshot" in self.checkpoint_metadata:
             del self.checkpoint_metadata["counters_since_delta_snapshot"]
         # sanitize TASK channel in the checkpoint before saving (durability=="exit")
-        if TASKS in self.checkpoint["channel_values"] and any(
-            isinstance(channel, UntrackedValue) for channel in self.channels.values()
-        ):
+        if TASKS in self.checkpoint["channel_values"] and self._has_untracked_values:
             sanitized_tasks = [
                 sanitize_untracked_values_in_send(value, self.channels)
                 if isinstance(value, Send)
